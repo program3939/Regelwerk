@@ -95,14 +95,15 @@
         for (const attr of [...node.attributes]) {
           const name = attr.name.toLowerCase();
           if (name === 'style') {
-            const styles = [];
+            const styleMap = new Map();
             for (const part of attr.value.split(';')) {
               const index = part.indexOf(':');
               if (index < 0) continue;
               const prop = part.slice(0, index).trim().toLowerCase();
               const val = cleanCssValue(prop, part.slice(index + 1));
-              if (val) styles.push(`${prop}:${val}`);
+              if (val) { styleMap.delete(prop); styleMap.set(prop, val); }
             }
+            const styles = [...styleMap].map(([prop, val]) => `${prop}:${val}`);
             if (styles.length) node.setAttribute('style', styles.join(';'));
             else node.removeAttribute('style');
           } else if (tag === 'A' && name === 'href') {
@@ -126,7 +127,7 @@
           }
         }
         if (tag === 'A') { node.setAttribute('rel','noopener noreferrer'); }
-        if (tag === 'IMG') { node.setAttribute('loading','lazy'); node.setAttribute('style', `${node.getAttribute('style') || ''};max-width:100%;height:auto`); }
+        if (tag === 'IMG') { node.setAttribute('loading','lazy'); const imgStyle = node.getAttribute('style') || ''; if (!/max-width/.test(imgStyle)) node.setAttribute('style', `${imgStyle ? imgStyle + ';' : ''}max-width:100%;height:auto`); }
         cleanNode(node);
       }
     }
@@ -154,7 +155,7 @@
         (Array.isArray(page.extraSections) ? page.extraSections : []).forEach((section, sectionIndex) => sections.push({ id:`legacy-section-${index}-${sectionIndex}`, title:String(section.title || `Abschnitt ${sectionIndex + 1}`), html:plainTextToHtml(section.text || '') }));
       }
       const name = String(page.name || page.title || `Seite ${index + 1}`);
-      return { id:String(page.id || `page-${index}-${Date.now().toString(36)}`), name, icon:String(page.icon || '◇'), title:String(page.title || name), lead:String(page.lead || ''), sections };
+      return { id:String(page.id || `page-${index}-${Date.now().toString(36)}`), name, icon:String(page.icon || '◇'), title:String(page.title || name), lead:String(page.lead || ''), updatedAt:String(page.updatedAt || ''), sections };
     });
     const currentPage = pages.some(page => page.id === input.currentPage) ? input.currentPage : pages[0].id;
     return { currentPage, pages };
@@ -265,6 +266,14 @@
       </div>
     </div>`;
 
+  // Liest editierbare Felder in Originalschreibung: innerText würde CSS-Großschreibung (text-transform) mitspeichern.
+  function fieldText(element) {
+    const previous = element.style.textTransform;
+    element.style.textTransform = 'none';
+    const text = element.innerText.replace(/\r/g,'');
+    element.style.textTransform = previous;
+    return text;
+  }
   function renderPage() {
     const page = current();
     const toolbar = isAdmin ? `<div class="edit-toolbar" aria-label="Website-Verwaltung">
@@ -286,7 +295,7 @@
       const path = element.dataset.field.split('.');
       let target = current();
       for (let i = 0; i < path.length - 1; i++) target = target[path[i]];
-      target[path[path.length - 1]] = element.innerText.replace(/\r/g,'');
+      target[path[path.length - 1]] = fieldText(element);
       save();
     }));
     $$('.doc-body[contenteditable="true"]').forEach(editor => editor.addEventListener('input', () => {
@@ -302,13 +311,13 @@
     if (!editMode) return;
     try {
       $$('.doc-body[contenteditable="true"]').forEach(editor => { const s = current().sections[Number(editor.dataset.richSection)]; if (s) s.html = sanitizeHtml(editor.innerHTML.replace(/\u200b/g,'')); });
-      $$('[data-field][contenteditable="true"]').forEach(element => { const path = element.dataset.field.split('.'); let t = current(); for (let i = 0; i < path.length - 1; i++) t = t[path[i]]; t[path[path.length - 1]] = element.innerText.replace(/\r/g,''); });
+      $$('[data-field][contenteditable="true"]').forEach(element => { const path = element.dataset.field.split('.'); let t = current(); for (let i = 0; i < path.length - 1; i++) t = t[path[i]]; t[path[path.length - 1]] = fieldText(element); });
       save();
     } catch (_) {}
   }
   window.addEventListener('pagehide', flushEditors);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushEditors(); });
-  function render() { renderNav(); renderPage(); }
+  function render() { renderNav(); renderPage(); enhance(); }
 
   function hexToBytes(hex) { return new Uint8Array(hex.match(/.{1,2}/g).map(byte => parseInt(byte,16))); }
   function bytesToHex(bytes) { return [...new Uint8Array(bytes)].map(value => value.toString(16).padStart(2,'0')).join(''); }
@@ -880,6 +889,543 @@
     $('#searchPanel').addEventListener('click', event => { const button = event.target.closest('[data-sr]'); if (button) jumpToSearchHit(searchResults[Number(button.dataset.sr)]); });
     document.addEventListener('click', event => { if (!event.target.closest('#pageSearch')) closeSearchPanel(); });
   })();
+
+
+  /* ======================================================================
+     Regelwerk Plus
+     Lesen: Inhaltskacheln, Direktlinks zu jeder Regel, Lesefortschritt,
+     Lesezeit/Stand, Schriftgröße, Tastenkürzel, Nach-oben, Druckansicht.
+     Editor: Slash-Menü, Markdown-Kürzel, automatische Regelnummern,
+     Format-Blase, bereinigtes Einfügen, Bilder per Einfügen/Ziehen,
+     Suchen & Ersetzen, Versionsverlauf, Fokusmodus, Wortzähler,
+     Seiten verschieben/duplizieren, versteckter Admin-Zugang.
+     ====================================================================== */
+  const RW = { rules: [], wasEditing: false, dirty: false, lastSaved: null, slash: null, find: { matches: [], index: -1 }, plainPaste: false, outlineTimer: 0, saveTimer: 0 };
+  const READ_SIZE_KEY = 'regelwerk-read-size-v1';
+  const HISTORY_KEY = `${SITE_KEY}-history-v1`;
+  const READ_SIZES = [15, 16, 17, 18, 20, 22];
+  const RULE_RE = /^\s*((?:[A-ZÄÖÜ]\s?\.\s?)?)(\d{1,3}(?:\.\d{1,3})*)(\.?)(?=[\s:)]|$)[\s:)]*([\s\S]*)$/;
+  const normText = value => String(value || '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+  const isTyping = target => !!target?.closest?.('input,textarea,select,[contenteditable="true"]');
+
+  function pageLetter(page) { const m = String(page?.name || '').match(/^\s*([A-ZÄÖÜ])\s*[-–—.:]/); return m ? m[1] : ''; }
+  function leadingStrongText(el) {
+    let text = '', started = false;
+    for (const node of el.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) { if (!normText(node.nodeValue)) continue; break; }
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      if (node.tagName === 'BR') { if (started) break; continue; }
+      if (node.tagName === 'STRONG' || node.tagName === 'B') { text += node.textContent; started = true; continue; }
+      break;
+    }
+    return normText(text);
+  }
+  // Erkennt Regeln und Kapitel: echte Überschriften, komplett fette Absätze
+  // und Absätze, die mit einer fetten Regelnummer beginnen ("C. 2.1 …").
+  function ruleInfo(el, fallbackLetter) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE || !/^(P|H1|H2|H3|H4|DIV)$/.test(el.tagName)) return null;
+    const text = normText(el.textContent);
+    if (!text || text.length > 600) return null;
+    const headingTag = /^H[1-4]$/.test(el.tagName);
+    const bold = leadingStrongText(el);
+    const heading = headingTag || (!!bold && bold === text && text.length <= 160);
+    const source = heading ? text : bold;
+    if (!source) return null;
+    const m = source.match(RULE_RE);
+    if (!m) return headingTag ? { heading: true, numbered: false, prefix: '', nums: '', dot: '', letter: fallbackLetter, title: text, text } : null;
+    const letter = (m[1] || '').replace(/[\s.]/g, '') || fallbackLetter;
+    return { heading, numbered: true, prefix: m[1] || '', nums: m[2], dot: m[3] || '', letter, title: normText(m[4]).replace(/[:\s]+$/, ''), text };
+  }
+  function slug(value) { return normText(value).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ß/g, 'ss').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'abschnitt'; }
+  function scanRules(root, page, used = new Set()) {
+    const fallback = pageLetter(page);
+    const out = [];
+    for (const el of root.children) {
+      const info = ruleInfo(el, fallback);
+      if (!info) continue;
+      let id = info.numbered ? `${info.letter ? info.letter + '-' : ''}${info.nums.replace(/\./g, '-')}` : slug(info.title);
+      let unique = id, n = 2; while (used.has(unique)) unique = `${id}-${n++}`; used.add(unique);
+      const label = info.numbered ? `${info.letter ? info.letter + '.' : ''}${info.nums}` : '—';
+      out.push({ el, id: unique, label, title: info.title || info.text.slice(0, 90), heading: info.heading, numbered: info.numbered });
+    }
+    return out;
+  }
+  function countRulesInHtml(page) {
+    const box = document.createElement('div'); const used = new Set(); let items = 0, heads = 0;
+    for (const section of page.sections || []) { box.innerHTML = section.html || ''; for (const r of scanRules(box, page, used)) r.heading ? heads++ : items++; }
+    return items ? `${items} ${items === 1 ? 'Regel' : 'Regeln'}` : heads ? `${heads} Kapitel` : '';
+  }
+  function pageWords(root = document) { return $$('.doc-body', root).reduce((sum, body) => sum + normText(body.innerText || body.textContent).split(' ').filter(Boolean).length, 0); }
+  function formatStand(value) { const d = value ? new Date(value) : null; return d && !Number.isNaN(d.getTime()) ? d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : ''; }
+
+  function renderOutline() {
+    const hero = $('.page-hero'); if (!hero) return;
+    $$('.rw-facts,.rw-toc').forEach(el => el.remove());
+    const page = current();
+    const used = new Set(); RW.rules = [];
+    $$('.doc-body').forEach(body => RW.rules.push(...scanRules(body, page, used)));
+    const heads = RW.rules.filter(r => r.heading); const items = RW.rules.filter(r => !r.heading);
+    const words = pageWords(); const minutes = Math.max(1, Math.round(words / 200)); const stand = formatStand(page.updatedAt);
+    const facts = [];
+    if (items.length) facts.push([items.length, items.length === 1 ? 'Regel' : 'Regeln']);
+    if (heads.filter(h => h.numbered || h.title).length) facts.push([heads.length, heads.length === 1 ? 'Kapitel' : 'Kapitel']);
+    if (words > 40) facts.push([minutes, 'Min. Lesezeit']);
+    facts.push(stand ? [stand, 'Stand'] : [data.pages.length, data.pages.length === 1 ? 'Seite' : 'Seiten']);
+    const factsHtml = `<div class="rw-facts" aria-label="Überblick">${facts.slice(0, 4).map(([n, l], i) => `<div class="rw-fact ${i === 0 ? 'rw-fact-lead' : ''} ${typeof n === 'string' ? 'rw-fact-text' : ''}"><strong>${escapeHtml(n)}</strong><span>${escapeHtml(l)}</span></div>`).join('')}</div>`;
+    let tocHtml = '';
+    if (heads.length >= 2) {
+      tocHtml = `<nav class="rw-toc" aria-label="Inhalt dieser Seite"><div class="rw-toc-head"><h2>Inhalt</h2><span>${heads.length} Kapitel${items.length ? ` · ${items.length} Regeln` : ''}</span></div><div class="rw-toc-grid">${heads.map(h => {
+        const index = RW.rules.indexOf(h); const count = (() => { let c = 0; for (let i = index + 1; i < RW.rules.length && !RW.rules[i].heading; i++) c++; return c; })();
+        return `<a class="rw-toc-tile" href="#${escapeHtml(h.id)}" data-rule-index="${index}"><span class="rw-toc-num">${escapeHtml(h.label)}</span><span class="rw-toc-title">${escapeHtml(h.title)}</span>${count ? `<span class="rw-toc-meta">${count} ${count === 1 ? 'Regel' : 'Regeln'}</span>` : ''}</a>`;
+      }).join('')}</div></nav>`;
+    } else if (!RW.rules.length && data.pages.length > 1) {
+      const others = data.pages.filter(p => p.id !== page.id);
+      tocHtml = `<nav class="rw-toc rw-pages" aria-label="Alle Regelwerke"><div class="rw-toc-head"><h2>Regelwerke</h2><span>${others.length} ${others.length === 1 ? 'Seite' : 'Seiten'}</span></div><div class="rw-toc-grid">${others.map(p => {
+        const count = countRulesInHtml(p); const letter = pageLetter(p);
+        return `<button type="button" class="rw-toc-tile" data-page="${escapeHtml(p.id)}"><span class="rw-toc-num">${escapeHtml(letter || '→')}</span><span class="rw-toc-title">${escapeHtml(p.name)}</span>${count ? `<span class="rw-toc-meta">${escapeHtml(count)}</span>` : ''}</button>`;
+      }).join('')}</div></nav>`;
+    }
+    hero.insertAdjacentHTML('afterend', factsHtml + tocHtml);
+  }
+  function decorateRules() {
+    if (editMode) return; // im Editor nichts in den Text einfügen, sonst würde es mitgespeichert
+    RW.rules.forEach(r => {
+      r.el.id = r.id; r.el.classList.add(r.heading ? 'rule-head' : 'rule-item');
+      if (!r.numbered && !r.heading) return;
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'rule-anchor'; button.dataset.ruleLink = r.id; button.dataset.ruleLabel = r.label;
+      button.title = 'Direktlink kopieren'; button.setAttribute('aria-label', `Direktlink zu ${r.label} kopieren`); button.textContent = '#';
+      r.el.append(button);
+    });
+  }
+  function jumpToRule(rule, { smooth = true, updateHash = true } = {}) {
+    if (!rule?.el?.isConnected) return;
+    rule.el.scrollIntoView({ behavior: smooth ? 'smooth' : 'instant', block: 'start' });
+    rule.el.classList.remove('rw-flash'); void rule.el.offsetWidth; rule.el.classList.add('rw-flash');
+    if (updateHash && !editMode) history.replaceState(null, '', `#${rule.id}`);
+  }
+  function openHashTarget() {
+    const id = decodeURIComponent(location.hash.slice(1) || '');
+    if (!id || id === 'start') return;
+    let rule = RW.rules.find(r => r.id === id);
+    if (!rule) {
+      const box = document.createElement('div');
+      const owner = data.pages.find(p => { const used = new Set(); return (p.sections || []).some(s => { box.innerHTML = s.html || ''; return scanRules(box, p, used).some(r => r.id === id); }); });
+      if (!owner) return;
+      flushEditors(); data.currentPage = owner.id; render();
+      rule = RW.rules.find(r => r.id === id);
+    }
+    if (rule) { const target = rule; setTimeout(() => jumpToRule(target, { smooth: false, updateHash: false }), 160); }
+  }
+
+  /* ---------- Lesehilfen ---------- */
+  const progress = document.createElement('div'); progress.className = 'rw-progress'; progress.setAttribute('aria-hidden', 'true'); document.body.append(progress);
+  const toTop = document.createElement('button'); toTop.type = 'button'; toTop.className = 'rw-top'; toTop.setAttribute('aria-label', 'Nach oben'); toTop.title = 'Nach oben'; toTop.textContent = '↑'; document.body.append(toTop);
+  toTop.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  let scrollQueued = false;
+  window.addEventListener('scroll', () => {
+    if (scrollQueued) return; scrollQueued = true;
+    requestAnimationFrame(() => {
+      scrollQueued = false;
+      const max = document.documentElement.scrollHeight - innerHeight;
+      progress.style.transform = `scaleX(${max > 0 ? Math.min(1, scrollY / max) : 0})`;
+      toTop.classList.toggle('is-visible', scrollY > 900);
+      if (RW.bubbleVisible) hideBubble();
+    });
+  }, { passive: true });
+  function applyReadSize(index) {
+    const i = Math.max(0, Math.min(READ_SIZES.length - 1, index));
+    document.documentElement.style.setProperty('--doc-size', `${READ_SIZES[i]}px`);
+    try { localStorage.setItem(READ_SIZE_KEY, String(i)); } catch (_) {}
+    return i;
+  }
+  let readSize = applyReadSize(Number(localStorage.getItem(READ_SIZE_KEY) ?? 2));
+  $('.top-actions')?.insertAdjacentHTML('afterbegin', `<div class="rw-size" role="group" aria-label="Lesegröße"><button type="button" data-rw="size-down" aria-label="Schrift kleiner" title="Schrift kleiner">A−</button><button type="button" data-rw="size-up" aria-label="Schrift größer" title="Schrift größer">A+</button><button type="button" data-rw="keys" aria-label="Tastenkürzel anzeigen" title="Tastenkürzel (?)">?</button></div>`);
+
+  /* ---------- Eigene Dialoge ---------- */
+  function makeModal(id, inner, wide = false) {
+    const backdrop = document.createElement('div');
+    backdrop.id = id; backdrop.className = 'modal-backdrop'; backdrop.hidden = true;
+    backdrop.innerHTML = `<section class="modal ${wide ? 'modal-wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="${id}Title"><button class="modal-x" type="button" data-close="${id}" aria-label="Schließen">×</button>${inner}</section>`;
+    document.body.append(backdrop); return backdrop;
+  }
+  const kbd = keys => keys.split('+').map(k => `<kbd>${escapeHtml(k)}</kbd>`).join('<span class="kbd-plus">+</span>');
+  const keyRows = rows => rows.map(([k, t]) => `<li><span class="rw-keys-k">${k.split(' / ').map(kbd).join(' <span class="kbd-or">oder</span> ')}</span><span>${escapeHtml(t)}</span></li>`).join('');
+  makeModal('rwKeysModal', `<p class="eyebrow">Regelwerk</p><h2 id="rwKeysModalTitle">Tastenkürzel</h2>
+    <h3 class="rw-keys-h">Lesen</h3><ul class="rw-keys">${keyRows([['/ / Strg+K', 'Alle Seiten durchsuchen'], ['?', 'Diese Übersicht'], ['Strg+P', 'Drucken oder als PDF sichern'], ['Strg+Shift+A', 'Verwaltung öffnen']])}</ul>
+    <h3 class="rw-keys-h">Editor</h3><ul class="rw-keys">${keyRows([['/', 'Befehlsmenü am Zeilenanfang'], ['Strg+Enter', 'Nächste Regel mit Nummer'], ['Strg+Shift+Enter', 'Unterregel (2.1 → 2.1.1)'], ['#+Leertaste', 'Überschrift (## Unterüberschrift)'], ['-+Leertaste', 'Aufzählung'], ['>+Leertaste', 'Hinweis-Block'], ['Strg+Alt+1 / Strg+Alt+2', 'Überschrift / Unterüberschrift'], ['Strg+Alt+0', 'Fließtext'], ['Strg+Shift+V', 'Ohne Formatierung einfügen'], ['Strg+H', 'Suchen und Ersetzen'], ['Strg+S', 'Speichern'], ['Strg+.', 'Fokusmodus'], ['Esc', 'Menü oder Dialog schließen']])}</ul>`, true);
+  const historyModal = makeModal('rwHistoryModal', `<p class="eyebrow">Verwaltung</p><h2 id="rwHistoryModalTitle">Versionsverlauf</h2><p class="muted">Beim Start jeder Bearbeitung und alle vier Minuten während des Schreibens wird eine Version in diesem Browser gesichert. Die letzten zehn bleiben erhalten.</p><div id="rwHistoryList" class="rw-history"></div><div class="modal-actions"><button class="button button-quiet" type="button" data-rw="snapshot">Jetzt Version sichern</button></div>`, true);
+  const openRwModal = modal => { modal.hidden = false; setTimeout(() => modal.querySelector('button,input')?.focus(), 0); };
+
+  /* ---------- Versionsverlauf ---------- */
+  function readHistory() { try { const list = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); return Array.isArray(list) ? list : []; } catch { return []; } }
+  function writeHistory(list) {
+    while (list.length > 1 && JSON.stringify(list).length > 1600000) list.shift();
+    while (list.length) { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); return true; } catch (_) { list.shift(); } }
+    try { localStorage.removeItem(HISTORY_KEY); } catch (_) {} return false;
+  }
+  function snapshot(label, quiet = false) {
+    flushEditors();
+    const json = JSON.stringify(data); const list = readHistory();
+    if (list.length && list[list.length - 1].json === json) { if (!quiet) showNotice('Seit der letzten Version gibt es keine Änderungen.', 'info'); return; }
+    list.push({ t: Date.now(), label, json }); while (list.length > 10) list.shift();
+    const ok = writeHistory(list); RW.dirty = false;
+    if (!quiet) showNotice(ok ? 'Version gesichert.' : 'Die Version passt nicht mehr in den Browserspeicher. Exportiere zur Sicherheit ein ZIP.', ok ? 'success' : 'error');
+    if (!historyModal.hidden) renderHistory();
+  }
+  function renderHistory() {
+    const list = readHistory();
+    $('#rwHistoryList').innerHTML = list.length ? list.map((entry, i) => ({ entry, i })).reverse().map(({ entry, i }) => {
+      let pages = 0, words = 0; try { const parsed = JSON.parse(entry.json); pages = parsed.pages.length; words = parsed.pages.reduce((s, p) => s + p.sections.reduce((t, sec) => t + normText(String(sec.html).replace(/<[^>]+>/g, ' ')).split(' ').filter(Boolean).length, 0), 0); } catch (_) {}
+      const d = new Date(entry.t);
+      return `<div class="rw-history-row"><div><strong>${escapeHtml(d.toLocaleDateString('de-DE'))} · ${escapeHtml(d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }))}</strong><span>${escapeHtml(entry.label)} · ${pages} Seiten · ${words.toLocaleString('de-DE')} Wörter</span></div><div class="rw-history-actions"><button class="button button-quiet" type="button" data-rw-download="${i}">JSON</button><button class="button button-primary" type="button" data-rw-restore="${i}">Wiederherstellen</button></div></div>`;
+    }).join('') : '<p class="muted">Noch keine Versionen gesichert.</p>';
+  }
+  setInterval(() => { if (isAdmin && editMode && RW.dirty) snapshot('Automatisch gesichert', true); }, 4 * 60 * 1000);
+
+  /* ---------- Werkzeuge im Admin-Bereich ---------- */
+  function enhanceAdmin() {
+    const bar = $('.edit-toolbar'); if (!bar) return;
+    const actions = $('.admin-actions', bar);
+    actions?.insertAdjacentHTML('beforeend', `<button class="button button-quiet" type="button" data-rw="page-up" title="Seite in der Navigation nach oben">Seite ↑</button><button class="button button-quiet" type="button" data-rw="page-down" title="Seite in der Navigation nach unten">Seite ↓</button><button class="button button-quiet" type="button" data-rw="page-dup">Seite duplizieren</button><button class="button button-quiet" type="button" data-rw="history">Verlauf</button><button class="button button-quiet" type="button" data-rw="logout">Abmelden</button>`);
+    if (!editMode) return;
+    bar.insertAdjacentHTML('beforeend', `<div class="rw-status" role="status" aria-live="polite"><span class="rw-stat" id="rwWords"></span><span class="rw-stat" id="rwSaved"></span><span class="rw-stat rw-hint">Tipp: <kbd>/</kbd> am Zeilenanfang öffnet das Befehlsmenü · <kbd>Strg</kbd>+<kbd>Enter</kbd> setzt die nächste Regelnummer</span><span class="rw-spacer"></span><button type="button" class="rw-chip" data-rw="find">Suchen &amp; Ersetzen</button><button type="button" class="rw-chip" data-rw="snapshot">Version sichern</button><button type="button" class="rw-chip" data-rw="focus">Fokus</button><button type="button" class="rw-chip" data-rw="keys">Kürzel</button></div>`);
+    updateStatus();
+  }
+  function updateStatus() {
+    const words = $('#rwWords'); if (!words) return;
+    const count = pageWords(); words.textContent = `${count.toLocaleString('de-DE')} Wörter · ${RW.rules.filter(r => !r.heading).length} Regeln`;
+    $('#rwSaved').textContent = RW.lastSaved ? `Gespeichert ${RW.lastSaved.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : 'Automatisches Speichern aktiv';
+  }
+
+  function enhance() {
+    try {
+      document.body.classList.toggle('rw-admin', isAdmin);
+      document.body.classList.toggle('rw-editing', editMode);
+      if (!editMode) document.body.classList.remove('rw-focus');
+      renderOutline(); decorateRules(); enhanceAdmin();
+      if (isAdmin && editMode && !RW.wasEditing) snapshot('Vor der Bearbeitung', true);
+      RW.wasEditing = isAdmin && editMode;
+      hideBubble(); closeSlash();
+      if (!editMode) closeFind();
+    } catch (error) { console.error('Regelwerk Plus', error); }
+  }
+
+  /* ---------- Änderungen verfolgen ---------- */
+  document.addEventListener('input', event => {
+    if (!editMode || !event.target.closest?.('.doc-body[contenteditable="true"],[data-field][contenteditable="true"]')) return;
+    current().updatedAt = new Date().toISOString(); RW.dirty = true; RW.lastSaved = new Date();
+    clearTimeout(RW.saveTimer); RW.saveTimer = setTimeout(() => { save(); updateStatus(); }, 350);
+    clearTimeout(RW.outlineTimer); RW.outlineTimer = setTimeout(() => { renderOutline(); updateStatus(); }, 900);
+    if (event.target.closest('.doc-body')) { handleMarkdown(event); updateSlash(); }
+  });
+
+  /* ---------- Caret-Helfer ---------- */
+  function caretContext() {
+    const sel = window.getSelection(); if (!sel || !sel.rangeCount) return null;
+    let node = sel.anchorNode; const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    const editor = el?.closest?.('.doc-body[contenteditable="true"]'); if (!editor) return null;
+    while (node && node.parentNode !== editor) node = node.parentNode;
+    return { editor, block: node || null, range: sel.getRangeAt(0) };
+  }
+  function placeCaret(node, offset = 0) { const range = document.createRange(); range.setStart(node, offset); range.collapse(true); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); savedRange = range.cloneRange(); }
+  function clearBlock(ctx) {
+    if (!ctx.block) return;
+    if (ctx.block.nodeType === Node.TEXT_NODE) { const p = document.createElement('p'); p.innerHTML = '<br>'; ctx.block.replaceWith(p); ctx.block = p; }
+    else ctx.block.innerHTML = '<br>';
+    placeCaret(ctx.block, 0);
+  }
+  const fire = (editor, type = 'insertText') => editor?.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: type }));
+
+  /* ---------- Automatische Regelnummern ---------- */
+  function nextNumber(nums, sub) { const parts = nums.split('.').map(Number); if (sub) parts.push(1); else parts[parts.length - 1] += 1; return parts.join('.'); }
+  function insertRule(sub = false, replaceCurrent = false) {
+    const ctx = caretContext(); if (!ctx) return;
+    const page = current(); const fallback = pageLetter(page);
+    let prev = null, n = ctx.block;
+    while (n && !prev) { if (n.nodeType === Node.ELEMENT_NODE) { const info = ruleInfo(n, fallback); if (info?.numbered) prev = info; } n = n.previousSibling; }
+    const prefix = prev ? prev.prefix : (fallback ? `${fallback}. ` : '');
+    const num = prev ? nextNumber(prev.nums, sub) : '1';
+    const dot = prev ? prev.dot : '';
+    const heading = !!prev?.heading && !sub;
+    const p = document.createElement('p'); const strong = document.createElement('strong');
+    strong.textContent = `${prefix}${num}${dot}${heading ? ' ' : ''}`; p.append(strong);
+    const tail = document.createTextNode(' '); if (!heading) p.append(tail);
+    if (replaceCurrent && ctx.block && normText(ctx.block.textContent) === '') ctx.block.replaceWith(p);
+    else if (ctx.block) ctx.block.after(p); else ctx.editor.append(p);
+    if (heading) placeCaret(strong.firstChild, strong.firstChild.length); else placeCaret(tail, 1);
+    p.scrollIntoView({ block: 'nearest' }); fire(ctx.editor);
+  }
+
+  /* ---------- Markdown-Kürzel ---------- */
+  function handleMarkdown(event) {
+    if (event.inputType !== 'insertText' || (event.data !== ' ' && event.data !== ' ')) return;
+    const ctx = caretContext(); if (!ctx?.block) return;
+    const text = String(ctx.block.textContent).replace(/ /g, ' ');
+    const rules = { '# ': ['block', 'h2'], '## ': ['block', 'h3'], '### ': ['block', 'h4'], '- ': ['cmd', 'insertUnorderedList'], '* ': ['cmd', 'insertUnorderedList'], '> ': ['block', 'blockquote'], '--- ': ['hr'] };
+    const action = rules[text]; if (!action) return;
+    if (ctx.block.nodeType === Node.ELEMENT_NODE && ctx.block.tagName !== 'P' && ctx.block.tagName !== 'DIV') return;
+    clearBlock(ctx);
+    if (action[0] === 'block') document.execCommand('formatBlock', false, `<${action[1]}>`);
+    if (action[0] === 'cmd') document.execCommand(action[1], false, null);
+    if (action[0] === 'hr') { const hr = document.createElement('hr'); const p = document.createElement('p'); p.innerHTML = '<br>'; ctx.block.replaceWith(hr); hr.after(p); placeCaret(p, 0); }
+    fire(ctx.editor, 'formatBlock');
+  }
+
+  /* ---------- Slash-Befehlsmenü ---------- */
+  const SLASH_ITEMS = [
+    { k: 'h2', label: 'Überschrift', hint: 'Kapiteltitel · # + Leertaste', kw: 'h2 uberschrift ueberschrift titel kapitel heading' },
+    { k: 'h3', label: 'Unterüberschrift', hint: '## + Leertaste', kw: 'h3 unter uberschrift ueberschrift' },
+    { k: 'p', label: 'Fließtext', hint: 'Normaler Absatz', kw: 'text absatz p normal' },
+    { k: 'rule', label: 'Nächste Regel', hint: 'Nummer automatisch · Strg+Enter', kw: 'regel nummer paragraph' },
+    { k: 'subrule', label: 'Unterregel', hint: '2.1 → 2.1.1 · Strg+Shift+Enter', kw: 'unterregel unter regel' },
+    { k: 'ul', label: 'Aufzählung', hint: '- + Leertaste', kw: 'liste punkte aufzahlung ul' },
+    { k: 'ol', label: 'Nummerierte Liste', hint: '1. 2. 3.', kw: 'liste nummer ol' },
+    { k: 'quote', label: 'Hinweis-Block', hint: '> + Leertaste', kw: 'zitat hinweis quote block' },
+    { k: 'hr', label: 'Trennlinie', hint: '--- + Leertaste', kw: 'linie trenn hr' },
+    { k: 'table', label: 'Tabelle', hint: 'Größe aus der Werkzeugleiste', kw: 'tabelle table' },
+    { k: 'image', label: 'Bild', hint: 'Oder einfach einfügen / hineinziehen', kw: 'bild foto image' },
+    { k: 'crafting', label: 'Crafting-Rezept', hint: 'Minecraft-Raster', kw: 'minecraft crafting rezept' },
+    { k: 'code', label: 'Code-Block', hint: 'Festbreitenschrift', kw: 'code' }
+  ];
+  const slashMenu = document.createElement('div'); slashMenu.className = 'rw-menu'; slashMenu.hidden = true; slashMenu.setAttribute('role', 'listbox'); slashMenu.setAttribute('aria-label', 'Befehle'); document.body.append(slashMenu);
+  function updateSlash() {
+    const ctx = caretContext();
+    const text = ctx?.block ? String(ctx.block.textContent).replace(/ /g, ' ') : '';
+    const m = text.match(/^\/([\p{L}\d ]{0,20})$/u);
+    if (!ctx || !m) { closeSlash(); return; }
+    const fold = v => v.toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss');
+    const q = fold(m[1].trim());
+    const items = SLASH_ITEMS.filter(item => !q || fold(`${item.label} ${item.kw}`).includes(q));
+    if (!items.length) { closeSlash(); return; }
+    RW.slash = { ctx, items, index: Math.min(RW.slash?.index || 0, items.length - 1) };
+    slashMenu.innerHTML = items.map((item, i) => `<button type="button" role="option" class="rw-menu-item ${i === RW.slash.index ? 'is-active' : ''}" data-slash="${i}" aria-selected="${i === RW.slash.index}"><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.hint)}</span></button>`).join('');
+    const rect = (ctx.range.getClientRects()[0] || ctx.block.getBoundingClientRect?.() || ctx.editor.getBoundingClientRect());
+    slashMenu.hidden = false;
+    const top = Math.min(rect.bottom + 8, innerHeight - slashMenu.offsetHeight - 8);
+    slashMenu.style.top = `${Math.max(8, top)}px`; slashMenu.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - slashMenu.offsetWidth - 8))}px`;
+    slashMenu.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' });
+  }
+  function closeSlash() { slashMenu.hidden = true; RW.slash = null; }
+  function runSlash(index) {
+    const state = RW.slash; if (!state) return;
+    const item = state.items[index]; const ctx = caretContext() || state.ctx; closeSlash();
+    if (!item || !ctx) return;
+    clearBlock(ctx);
+    if (['h2', 'h3', 'p'].includes(item.k)) document.execCommand('formatBlock', false, `<${item.k}>`);
+    else if (item.k === 'quote') document.execCommand('formatBlock', false, '<blockquote>');
+    else if (item.k === 'ul') document.execCommand('insertUnorderedList', false, null);
+    else if (item.k === 'ol') document.execCommand('insertOrderedList', false, null);
+    else if (item.k === 'rule' || item.k === 'subrule') { insertRule(item.k === 'subrule', true); return; }
+    else { lastEditor = ctx.editor; savedRange = window.getSelection().getRangeAt(0).cloneRange(); handleRichInsert(item.k); return; }
+    fire(ctx.editor, 'formatBlock');
+  }
+  slashMenu.addEventListener('mousedown', event => event.preventDefault());
+  slashMenu.addEventListener('click', event => { const button = event.target.closest('[data-slash]'); if (button) runSlash(Number(button.dataset.slash)); });
+
+  /* ---------- Format-Blase ---------- */
+  const bubble = document.createElement('div'); bubble.className = 'rw-bubble'; bubble.hidden = true; bubble.setAttribute('role', 'toolbar'); bubble.setAttribute('aria-label', 'Auswahl formatieren');
+  bubble.innerHTML = `<button type="button" data-command="bold" title="Fett" aria-label="Fett"><b>B</b></button><button type="button" data-command="italic" title="Kursiv" aria-label="Kursiv"><i>I</i></button><button type="button" data-command="underline" title="Unterstrichen" aria-label="Unterstrichen"><u>U</u></button><button type="button" data-command="strikeThrough" title="Durchgestrichen" aria-label="Durchgestrichen"><s>S</s></button><span class="rw-bubble-sep"></span><button type="button" data-rw-block="h2" title="Überschrift">H2</button><button type="button" data-rw-block="h3" title="Unterüberschrift">H3</button><button type="button" data-rw-block="p" title="Fließtext">¶</button><span class="rw-bubble-sep"></span><button type="button" data-rw="mark" title="Markieren" aria-label="Markieren"><span class="rw-mark-swatch"></span></button><button type="button" data-insert="link" title="Link" aria-label="Link einfügen">↗</button><button type="button" data-command="removeFormat" title="Formatierung entfernen" aria-label="Formatierung entfernen">Tx</button>`;
+  document.body.append(bubble);
+  bubble.addEventListener('mousedown', event => event.preventDefault());
+  function hideBubble() { bubble.hidden = true; RW.bubbleVisible = false; }
+  let bubbleTimer = 0;
+  document.addEventListener('selectionchange', () => {
+    clearTimeout(bubbleTimer);
+    bubbleTimer = setTimeout(() => {
+      const sel = window.getSelection();
+      if (!editMode || !sel || sel.isCollapsed || !sel.rangeCount || RW.slash) { hideBubble(); return; }
+      const ctx = caretContext(); if (!ctx || !ctx.editor.contains(sel.focusNode)) { hideBubble(); return; }
+      const rect = sel.getRangeAt(0).getBoundingClientRect(); if (!rect.width) { hideBubble(); return; }
+      bubble.hidden = false; RW.bubbleVisible = true;
+      const top = rect.top - bubble.offsetHeight - 10;
+      bubble.style.top = `${top < 72 ? rect.bottom + 10 : top}px`;
+      bubble.style.left = `${Math.max(8, Math.min(rect.left + rect.width / 2 - bubble.offsetWidth / 2, innerWidth - bubble.offsetWidth - 8))}px`;
+    }, 120);
+  });
+
+  /* ---------- Einfügen: bereinigen, Bilder, reiner Text ---------- */
+  function cleanPaste(html) {
+    const template = document.createElement('template'); template.innerHTML = sanitizeHtml(html);
+    template.content.querySelectorAll('[style]').forEach(el => {
+      const weight = el.style.fontWeight; const italic = el.style.fontStyle === 'italic';
+      ['color', 'background-color', 'font-family', 'font-size', 'line-height', 'margin-left', 'padding-left', 'text-indent'].forEach(p => el.style.removeProperty(p));
+      if (el.tagName === 'B' && /^(normal|400)$/.test(weight)) { el.replaceWith(...el.childNodes); return; }
+      if (el.tagName === 'SPAN' && /^(bold|[6-9]00)$/.test(weight)) { const s = document.createElement('strong'); s.append(...el.childNodes); el.replaceWith(s); return; }
+      if (el.tagName === 'SPAN' && italic) { const s = document.createElement('em'); s.append(...el.childNodes); el.replaceWith(s); return; }
+      if (el.tagName !== 'IMG') { el.style.removeProperty('font-weight'); el.style.removeProperty('font-style'); }
+      if (!el.getAttribute('style')?.trim()) el.removeAttribute('style');
+    });
+    template.content.querySelectorAll('span,font').forEach(el => { if (!el.attributes.length) el.replaceWith(...el.childNodes); });
+    return template.innerHTML;
+  }
+  function insertImageFile(file) {
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) { showNotice('Bitte verwende ein PNG-, JPG-, GIF- oder WebP-Bild.', 'error'); return; }
+    if (file.size > 2 * 1024 * 1024) { showNotice('Das Bild ist größer als 2 MB. Bitte verkleinere es vor dem Einfügen.', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = () => { const uri = String(reader.result || ''); if (!uri.startsWith('data:image/')) return; insertHtmlAtCursor(`<p><img src="${uri}" alt="Eingefügtes Bild" style="max-width:100%;height:auto"></p>`); showNotice('Bild eingefügt.'); };
+    reader.readAsDataURL(file);
+  }
+  document.addEventListener('keydown', event => { RW.plainPaste = (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'v'; }, true);
+  document.addEventListener('paste', event => {
+    const editor = event.target.closest?.('.doc-body[contenteditable="true"]'); if (!editor) return;
+    event.preventDefault(); event.stopImmediatePropagation(); lastEditor = editor;
+    const files = [...(event.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'));
+    if (files.length) { savedRange = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0).cloneRange() : savedRange; insertImageFile(files[0]); return; }
+    const html = event.clipboardData?.getData('text/html'); const text = event.clipboardData?.getData('text/plain') || '';
+    if (html && !RW.plainPaste) document.execCommand('insertHTML', false, cleanPaste(html));
+    else document.execCommand('insertText', false, text);
+    RW.plainPaste = false; fire(editor, 'insertFromPaste');
+  }, true);
+  document.addEventListener('dragover', event => { if (event.target.closest?.('.doc-body[contenteditable="true"]') && [...(event.dataTransfer?.items || [])].some(i => i.kind === 'file')) { event.preventDefault(); event.target.closest('.doc-body').classList.add('rw-drop'); } });
+  document.addEventListener('dragleave', event => event.target.closest?.('.doc-body')?.classList.remove('rw-drop'));
+  document.addEventListener('drop', event => {
+    const editor = event.target.closest?.('.doc-body[contenteditable="true"]'); if (!editor) return;
+    editor.classList.remove('rw-drop');
+    const file = [...(event.dataTransfer?.files || [])].find(f => f.type.startsWith('image/')); if (!file) return;
+    event.preventDefault(); lastEditor = editor;
+    const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+    if (range && editor.contains(range.startContainer)) savedRange = range; insertImageFile(file);
+  });
+
+  /* ---------- Suchen & Ersetzen ---------- */
+  const findPanel = document.createElement('div'); findPanel.className = 'rw-find'; findPanel.hidden = true; findPanel.setAttribute('role', 'dialog'); findPanel.setAttribute('aria-label', 'Suchen und Ersetzen');
+  findPanel.innerHTML = `<div class="rw-find-head"><strong>Suchen &amp; Ersetzen</strong><span id="rwFindCount">0 Treffer</span><button type="button" class="rw-find-x" data-rw="find-close" aria-label="Schließen">×</button></div><label class="rw-find-field"><span>Suchen</span><input id="rwFindInput" type="text" autocomplete="off" spellcheck="false"></label><label class="rw-find-field"><span>Ersetzen</span><input id="rwReplaceInput" type="text" autocomplete="off" spellcheck="false"></label><label class="rw-find-case"><input id="rwFindCase" type="checkbox"> Groß-/Kleinschreibung beachten</label><div class="rw-find-actions"><button type="button" class="button button-quiet" data-rw="find-prev" aria-label="Vorheriger Treffer">↑</button><button type="button" class="button button-quiet" data-rw="find-next" aria-label="Nächster Treffer">↓</button><button type="button" class="button button-quiet" data-rw="replace-one">Ersetzen</button><button type="button" class="button button-primary" data-rw="replace-all">Alle ersetzen</button></div>`;
+  document.body.append(findPanel);
+  const escapeRe = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  function textNodesOf(root) { const out = []; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: n => n.parentElement?.closest('[data-mc-recipe]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT }); while (walker.nextNode()) out.push(walker.currentNode); return out; }
+  function computeFind() {
+    const query = $('#rwFindInput').value; RW.find.matches = [];
+    if (query) {
+      const re = new RegExp(escapeRe(query), $('#rwFindCase').checked ? 'g' : 'gi');
+      $$('.doc-body[contenteditable="true"]').forEach(editor => textNodesOf(editor).forEach(node => { let m; re.lastIndex = 0; while ((m = re.exec(node.nodeValue))) { RW.find.matches.push({ editor, node, start: m.index, end: m.index + m[0].length }); if (!m[0].length) break; } }));
+    }
+    if (RW.find.index >= RW.find.matches.length) RW.find.index = RW.find.matches.length - 1;
+    paintFind();
+  }
+  function paintFind() {
+    const { matches, index } = RW.find;
+    $('#rwFindCount').textContent = matches.length ? `${index >= 0 ? index + 1 : 0} / ${matches.length}` : '0 Treffer';
+    if (!window.CSS?.highlights || typeof Highlight === 'undefined') return;
+    const toRange = m => { const r = document.createRange(); r.setStart(m.node, m.start); r.setEnd(m.node, m.end); return r; };
+    CSS.highlights.set('rw-find', new Highlight(...matches.map(toRange)));
+    if (index >= 0 && matches[index]) CSS.highlights.set('rw-find-current', new Highlight(toRange(matches[index]))); else CSS.highlights.delete('rw-find-current');
+  }
+  function stepFind(dir) {
+    computeFind(); const n = RW.find.matches.length; if (!n) return;
+    RW.find.index = (RW.find.index + dir + n) % n; paintFind();
+    const m = RW.find.matches[RW.find.index]; const r = document.createRange(); r.setStart(m.node, m.start);
+    const rect = r.getBoundingClientRect(); if (rect.top < 140 || rect.bottom > innerHeight - 40) window.scrollBy({ top: rect.top - innerHeight / 2, behavior: 'smooth' });
+  }
+  function replaceOne() {
+    computeFind(); if (RW.find.index < 0) { stepFind(1); return; }
+    const m = RW.find.matches[RW.find.index]; if (!m) return;
+    m.node.nodeValue = m.node.nodeValue.slice(0, m.start) + $('#rwReplaceInput').value + m.node.nodeValue.slice(m.end);
+    fire(m.editor); RW.find.index -= 1; stepFind(1);
+  }
+  function replaceAll() {
+    const query = $('#rwFindInput').value; if (!query) return;
+    const re = new RegExp(escapeRe(query), $('#rwFindCase').checked ? 'g' : 'gi'); const replacement = $('#rwReplaceInput').value; let total = 0;
+    $$('.doc-body[contenteditable="true"]').forEach(editor => { let changed = false; textNodesOf(editor).forEach(node => { const count = (node.nodeValue.match(re) || []).length; if (count) { total += count; changed = true; node.nodeValue = node.nodeValue.replace(re, () => replacement); } }); if (changed) fire(editor); });
+    RW.find.index = -1; computeFind(); showNotice(total ? `${total} ${total === 1 ? 'Stelle' : 'Stellen'} ersetzt.` : 'Nichts gefunden.', total ? 'success' : 'info');
+  }
+  function openFind() {
+    if (!isAdmin || !editMode) { showNotice('Suchen & Ersetzen gibt es im Dokument-Editor.', 'info'); return; }
+    findPanel.hidden = false; const sel = window.getSelection()?.toString(); if (sel && sel.length < 80) $('#rwFindInput').value = sel;
+    $('#rwFindInput').focus(); $('#rwFindInput').select(); RW.find.index = -1; computeFind();
+  }
+  function closeFind() { findPanel.hidden = true; try { CSS.highlights?.delete('rw-find'); CSS.highlights?.delete('rw-find-current'); } catch (_) {} }
+  $('#rwFindInput').addEventListener('input', () => { RW.find.index = -1; computeFind(); });
+  $('#rwFindCase').addEventListener('change', () => { RW.find.index = -1; computeFind(); });
+  findPanel.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); if (event.target.id === 'rwReplaceInput') replaceOne(); else stepFind(event.shiftKey ? -1 : 1); }
+    if (event.key === 'Escape') { event.preventDefault(); closeFind(); }
+    event.stopPropagation();
+  });
+
+  /* ---------- Klicks ---------- */
+  document.addEventListener('click', event => {
+    const tile = event.target.closest('[data-rule-index]');
+    if (tile) { event.preventDefault(); jumpToRule(RW.rules[Number(tile.dataset.ruleIndex)]); return; }
+    const link = event.target.closest('[data-rule-link]');
+    if (link) {
+      const url = `${location.href.split('#')[0]}#${link.dataset.ruleLink}`;
+      const done = () => showNotice(`Direktlink zu ${link.dataset.ruleLabel} kopiert.`);
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url).then(done, () => showNotice(url, 'info')); else showNotice(url, 'info');
+      history.replaceState(null, '', `#${link.dataset.ruleLink}`); return;
+    }
+    if (event.target.closest('[data-page]')) { if (location.hash) history.replaceState(null, '', location.pathname + location.search); window.scrollTo({ top: 0 }); }
+    const block = event.target.closest('[data-rw-block]');
+    if (block) { if (!restoreEditorSelection()) return; document.execCommand('formatBlock', false, `<${block.dataset.rwBlock}>`); fire(lastEditor, 'formatBlock'); return; }
+    const restore = event.target.closest('[data-rw-restore]');
+    if (restore) {
+      const entry = readHistory()[Number(restore.dataset.rwRestore)]; if (!entry) return;
+      historyModal.hidden = true;
+      openActionModal({ title: 'Version wiederherstellen?', description: `Der Stand vom ${new Date(entry.t).toLocaleString('de-DE')} ersetzt alle Seiten in diesem Browser. Der aktuelle Stand wird vorher als Version gesichert.`, confirmOnly: true, confirmText: 'Wiederherstellen', danger: true, onConfirm: () => {
+        snapshot('Vor dem Wiederherstellen', true);
+        try { data = normalizeSiteData(JSON.parse(entry.json)); save(); render(); showNotice('Version wiederhergestellt.'); } catch (_) { showNotice('Diese Version konnte nicht gelesen werden.', 'error'); }
+      } });
+      return;
+    }
+    const download = event.target.closest('[data-rw-download]');
+    if (download) { const entry = readHistory()[Number(download.dataset.rwDownload)]; if (entry) exportFile(`Regelwerk_Version_${new Date(entry.t).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.json`, JSON.stringify(JSON.parse(entry.json), null, 2), 'application/json;charset=utf-8'); return; }
+    const action = event.target.closest('[data-rw]')?.dataset.rw; if (!action) return;
+    const index = data.pages.findIndex(p => p.id === data.currentPage);
+    if (action === 'size-down') readSize = applyReadSize(readSize - 1);
+    if (action === 'size-up') readSize = applyReadSize(readSize + 1);
+    if (action === 'keys') openRwModal($('#rwKeysModal'));
+    if (action === 'history') { flushEditors(); renderHistory(); openRwModal(historyModal); }
+    if (action === 'snapshot') snapshot('Manuell gesichert');
+    if (action === 'focus') { document.body.classList.toggle('rw-focus'); showNotice(document.body.classList.contains('rw-focus') ? 'Fokusmodus an. Esc beendet ihn.' : 'Fokusmodus aus.', 'info'); }
+    if (action === 'find') openFind();
+    if (action === 'find-close') closeFind();
+    if (action === 'find-next') stepFind(1);
+    if (action === 'find-prev') stepFind(-1);
+    if (action === 'replace-one') replaceOne();
+    if (action === 'replace-all') replaceAll();
+    if (action === 'mark') applyInlineStyle('background-color', '#d7f58c');
+    if (action === 'logout' && isAdmin) $('#adminButton').click();
+    if (action === 'page-up' && index > 0) { flushEditors(); [data.pages[index - 1], data.pages[index]] = [data.pages[index], data.pages[index - 1]]; save(); render(); showNotice('Seite nach oben verschoben.'); }
+    if (action === 'page-down' && index < data.pages.length - 1) { flushEditors(); [data.pages[index + 1], data.pages[index]] = [data.pages[index], data.pages[index + 1]]; save(); render(); showNotice('Seite nach unten verschoben.'); }
+    if (action === 'page-dup') {
+      flushEditors(); const copy = structuredClone(current()); copy.id = makeId('page'); copy.name = `${copy.name} (Kopie)`; copy.title = `${copy.title} (Kopie)`; copy.updatedAt = new Date().toISOString();
+      copy.sections.forEach(s => { s.id = makeId('section'); }); data.pages.splice(index + 1, 0, copy); data.currentPage = copy.id; save(); render(); showNotice('Seite dupliziert.');
+    }
+  });
+
+  /* ---------- Tastatur ---------- */
+  document.addEventListener('keydown', event => {
+    const mod = event.ctrlKey || event.metaKey;
+    if (RW.slash && !slashMenu.hidden) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); RW.slash.index = (RW.slash.index + (event.key === 'ArrowDown' ? 1 : -1) + RW.slash.items.length) % RW.slash.items.length; updateSlash(); return; }
+      if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); runSlash(RW.slash.index); return; }
+      if (event.key === 'Escape') { event.preventDefault(); closeSlash(); return; }
+    }
+    if (event.key === 'Escape') {
+      for (const id of ['rwKeysModal', 'rwHistoryModal']) if (!$('#' + id).hidden) { $('#' + id).hidden = true; return; }
+      if (!findPanel.hidden) { closeFind(); return; }
+      if (document.body.classList.contains('rw-focus')) { document.body.classList.remove('rw-focus'); return; }
+      hideBubble();
+    }
+    if (mod && event.shiftKey && event.key.toLowerCase() === 'a') { event.preventDefault(); if (!isAdmin) $('#adminButton').click(); else showNotice('Die Verwaltung ist bereits geöffnet.', 'info'); return; }
+    if (isTyping(event.target)) {
+      const inEditor = event.target.closest?.('.doc-body[contenteditable="true"]');
+      if (!inEditor) return;
+      if (mod && event.key === 'Enter') { event.preventDefault(); insertRule(event.shiftKey); return; }
+      if (mod && (event.key.toLowerCase() === 'h' || (event.shiftKey && event.key.toLowerCase() === 'f'))) { event.preventDefault(); openFind(); return; }
+      if (mod && event.key === '.') { event.preventDefault(); document.body.classList.toggle('rw-focus'); return; }
+      if (mod && event.altKey && ['1', '2', '0'].includes(event.key)) { event.preventDefault(); document.execCommand('formatBlock', false, event.key === '1' ? '<h2>' : event.key === '2' ? '<h3>' : '<p>'); fire(inEditor, 'formatBlock'); return; }
+      return;
+    }
+    if ((event.key === '/' && !mod) || (mod && event.key.toLowerCase() === 'k')) { event.preventDefault(); $('#globalSearch')?.focus(); return; }
+    if (event.key === '?') { event.preventDefault(); openRwModal($('#rwKeysModal')); return; }
+    if (mod && event.key.toLowerCase() === 'h' && isAdmin && editMode) { event.preventDefault(); openFind(); }
+  });
+  window.addEventListener('hashchange', openHashTarget);
+  window.addEventListener('resize', () => { hideBubble(); closeSlash(); });
+  try { if (new URLSearchParams(location.search).has('admin')) setTimeout(() => { if (!isAdmin) $('#adminButton').click(); }, 0); } catch (_) {}
+  setTimeout(openHashTarget, 0);
+
 
   // Alte Cookie-/Statistik-Reste entfernen und gemerkten Admin-Login wiederherstellen
   try { ['regelwerk-static-consent-v1','regelwerk-local-visits-v1','regelwerk-browser-id-v1'].forEach(k => localStorage.removeItem(k)); document.cookie = 'regelwerk_browser_id=; Max-Age=0; Path=/; SameSite=Lax'; } catch (_) {}
