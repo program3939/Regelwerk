@@ -9,8 +9,8 @@
   const VISITS_KEY = 'regelwerk-local-visits-v1';
   const ADMIN_TOKEN_KEY = 'regelwerk-admin-remembered-v1';
   const SOUND_KEY = 'regelwerk-ui-sounds-v1';
-  const ADMIN_SALT_HEX = 'd38bbd98289b87dc0a6f4a8741e28f1a';
-  const ADMIN_HASH_HEX = 'c9e05951e2862f5832971e6158bb1a5f7bb4ef58cddc02230ab1a4c3823229da';
+  const ADMIN_SALT_HEX = 'ff6fd3223e7a146ed33b0847c0328ba5';
+  const ADMIN_HASH_HEX = 'f93679b62ac98ac2156e6ce8db3c45b1036c00140ff07dcacb35e814d62d15e0';
   const ADMIN_ITERATIONS = 600000;
   const safeParse = (value, fallback) => { try { return value ? JSON.parse(value) : fallback; } catch { return fallback; } };
   const starter = {
