@@ -163,6 +163,8 @@
 
   const embeddedData = safeParse(EMBEDDED_DATA_TAG?.textContent, null);
   let data = normalizeSiteData(safeParse(localStorage.getItem(SITE_KEY), null) || embeddedData || starter);
+  // Jeder Aufruf startet auf der ersten Seite (Startseite); Direktlinks per #… springen trotzdem zur Regel.
+  if (data.pages[0]) data.currentPage = data.pages[0].id;
   let isAdmin = false;
   let editMode = false;
   let lastEditor = null;
