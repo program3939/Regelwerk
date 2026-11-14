@@ -1082,11 +1082,11 @@
   let readSize = applyReadSize(Number(localStorage.getItem(READ_SIZE_KEY) ?? 2));
   const THEME_KEY = 'regelwerk-theme-v1';
   function applyTheme(theme) {
-    if (theme === 'mono') document.documentElement.dataset.theme = 'mono'; else delete document.documentElement.dataset.theme;
+    document.documentElement.dataset.theme = theme === 'color' ? 'color' : 'mono';
     const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = theme === 'mono' ? '#1e1e1e' : '#1a1a1a';
     try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
   }
-  try { applyTheme(localStorage.getItem(THEME_KEY) || 'color'); } catch (_) { applyTheme('color'); }
+  try { applyTheme(localStorage.getItem(THEME_KEY) || 'mono'); } catch (_) { applyTheme('mono'); }
   $('.top-actions')?.insertAdjacentHTML('afterbegin', `<div class="rw-size" role="group" aria-label="Lesegröße"><button type="button" data-rw="size-down" aria-label="Schrift kleiner" title="Schrift kleiner">A−</button><button type="button" data-rw="size-up" aria-label="Schrift größer" title="Schrift größer">A+</button><button type="button" data-rw="theme" aria-label="Zwischen Farbe und Schwarz-Weiß wechseln" title="Schwarz-Weiß / Farbe">◐</button><button type="button" data-rw="keys" aria-label="Tastenkürzel anzeigen" title="Tastenkürzel (?)">?</button></div>`);
 
   /* ---------- Eigene Dialoge ---------- */
@@ -1420,7 +1420,7 @@
     const index = data.pages.findIndex(p => p.id === data.currentPage);
     if (action === 'outline-open') document.body.classList.add('rw-outline-open');
     if (action === 'outline-close') document.body.classList.remove('rw-outline-open');
-    if (action === 'theme') { const next = document.documentElement.dataset.theme === 'mono' ? 'color' : 'mono'; applyTheme(next); showNotice(next === 'mono' ? 'Schwarz-Weiß ist an.' : 'Farbversion ist an.', 'info'); }
+    if (action === 'theme') { const next = document.documentElement.dataset.theme === 'color' ? 'mono' : 'color'; applyTheme(next); showNotice(next === 'mono' ? 'Schwarz-Weiß ist an.' : 'Farbversion ist an.', 'info'); }
     if (action === 'size-down') readSize = applyReadSize(readSize - 1);
     if (action === 'size-up') readSize = applyReadSize(readSize + 1);
     if (action === 'keys') openRwModal($('#rwKeysModal'));
