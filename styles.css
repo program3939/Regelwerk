@@ -555,3 +555,46 @@ kbd{display:inline-block;min-width:22px;padding:1px 6px;border:1px solid current
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 
 @media print{.rw-outline,.rw-outline-toggle{display:none!important}.dynamic-sections.has-outline{grid-template-columns:1fr}}
+
+
+/* ---------- Schwarz-Weiß, mattes Schwarz (Umschalter ◐) ----------
+   Soft anthracite instead of deep black, muted off-white instead of pure
+   white, grey markers instead of lime. Everything else follows the tokens. */
+:root[data-theme="mono"]{
+  --black:#1c1c1c;
+  --ink:#232323;
+  --ink-2:#2b2b2b;
+  --ink-3:#343434;
+  --ink-4:#414141;
+  --line-d:rgba(255,255,255,.08);
+  --grey:#c8c8c6;
+  --grey-2:#dcdcda;
+  --paper:#ebebe8;
+  --white:#f1f1ef;
+  --on-dark:#ebebe9;
+  --on-dark-2:#a2a2a0;
+  --on-dark-3:#777775;
+  --on-light:#1c1c1c;
+  --on-light-2:#4a4a48;
+  --on-light-3:#6f6f6d;
+  --lime:#e4e4e2;
+  --lime-2:#d2d2d0;
+}
+[data-theme="mono"] ::selection{background:#d0d0ce;color:#1c1c1c}
+[data-theme="mono"] .page-hero p{color:var(--on-dark-2)}
+[data-theme="mono"] .eyebrow{color:var(--on-dark-3)}
+[data-theme="mono"] .rw-toc{background:var(--grey)}
+[data-theme="mono"] .nav-item:nth-child(5n+2){background:var(--grey-2)}
+[data-theme="mono"] .nav-item.active{color:var(--on-dark)!important;box-shadow:inset 6px 0 0 var(--on-dark)}
+[data-theme="mono"] .brand-mark{background:var(--on-dark);color:var(--black)}
+[data-theme="mono"] .brand-dot{color:var(--on-dark-2)}
+[data-theme="mono"] .doc-body p>strong:first-child,[data-theme="mono"] .doc-body p>strong:first-child+strong{background:linear-gradient(transparent 58%,#cfcfcc 58%,#cfcfcc 92%,transparent 92%)}
+[data-theme="mono"] .doc-body .rule-head strong{background:none}
+[data-theme="mono"] .doc-body a:hover{background:#d6d6d3}
+[data-theme="mono"] .rw-outline a.is-active{border-left-color:var(--on-dark)}
+[data-theme="mono"] .rw-outline a.is-active .rw-outline-num,[data-theme="mono"] .breadcrumb.has-chapter .crumb-chapter{color:var(--on-dark)}
+[data-theme="mono"] .rw-flash{animation-name:rw-flash-mono}
+@keyframes rw-flash-mono{0%,30%{background-color:#d6d6d3;box-shadow:0 0 0 10px #d6d6d3}100%{background-color:transparent;box-shadow:0 0 0 10px transparent}}
+[data-theme="mono"] .modal{box-shadow:12px 12px 0 var(--ink-4)}
+[data-theme="mono"] .notice{box-shadow:0 12px 40px rgba(0,0,0,.35)}
+[data-theme="mono"] .rw-size button[data-rw="theme"]{background:var(--on-dark);color:var(--black)}
