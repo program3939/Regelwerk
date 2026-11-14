@@ -988,6 +988,42 @@
       }).join('')}</div></nav>`;
     }
     hero.insertAdjacentHTML('afterend', factsHtml + tocHtml);
+    renderSideOutline(heads);
+  }
+  // Seitliche Gliederung "Auf dieser Seite" mit Markierung des gerade gelesenen Kapitels
+  function renderSideOutline(heads) {
+    $$('.rw-outline,.rw-outline-toggle').forEach(el => el.remove());
+    if (RW.spyScroll) window.removeEventListener('scroll', RW.spyScroll);
+    RW.spyScroll = null; setChapter(-1);
+    const host = $('.dynamic-sections');
+    host?.classList.toggle('has-outline', heads.length >= 2);
+    if (!host || heads.length < 2) return;
+    host.insertAdjacentHTML('afterbegin', `<aside class="rw-outline" aria-label="Auf dieser Seite"><div class="rw-outline-head"><span>Auf dieser Seite</span><button type="button" class="rw-outline-close" data-rw="outline-close" aria-label="Gliederung schließen">×</button></div><ol>${heads.map(h => `<li><a href="#${escapeHtml(h.id)}" data-rule-index="${RW.rules.indexOf(h)}" data-outline="${RW.rules.indexOf(h)}"><span class="rw-outline-num">${escapeHtml(h.label)}</span><span class="rw-outline-title">${escapeHtml(h.title)}</span></a></li>`).join('')}</ol></aside>`);
+    document.body.insertAdjacentHTML('beforeend', `<button type="button" class="rw-outline-toggle" data-rw="outline-open" aria-label="Kapitelübersicht öffnen"><span aria-hidden="true">≡</span> Kapitel</button>`);
+    let queued = false;
+    const onScroll = () => {
+      if (queued) return; queued = true;
+      requestAnimationFrame(() => {
+        queued = false; let active = -1;
+        heads.forEach(h => { if (h.el.isConnected && h.el.getBoundingClientRect().top < innerHeight * 0.35) active = RW.rules.indexOf(h); });
+        setChapter(active);
+      });
+    };
+    RW.spyScroll = onScroll;
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  }
+  function setChapter(index) {
+    if (RW.chapter === index) return; RW.chapter = index;
+    $$('.rw-outline a.is-active').forEach(a => a.classList.remove('is-active'));
+    const link = index >= 0 ? $(`.rw-outline a[data-outline="${index}"]`) : null;
+    if (link) {
+      link.classList.add('is-active');
+      const list = link.closest('ol');
+      if (list && list.scrollHeight > list.clientHeight) list.scrollTo({ top: link.offsetTop - list.clientHeight / 2, behavior: 'smooth' });
+    }
+    const crumb = $('#rwCrumbChapter'); const rule = RW.rules[index];
+    if (crumb) { crumb.textContent = rule ? `${rule.numbered ? rule.label + ' ' : ''}${rule.title}` : ''; crumb.parentElement?.classList.toggle('has-chapter', !!rule); }
   }
   function decorateRules() {
     if (editMode) return; // im Editor nichts in den Text einfügen, sonst würde es mitgespeichert
@@ -1002,7 +1038,8 @@
   }
   function jumpToRule(rule, { smooth = true, updateHash = true } = {}) {
     if (!rule?.el?.isConnected) return;
-    rule.el.scrollIntoView({ behavior: smooth ? 'smooth' : 'instant', block: 'start' });
+    const far = Math.abs(rule.el.getBoundingClientRect().top) > innerHeight * 2.5;
+    rule.el.scrollIntoView({ behavior: smooth && !far ? 'smooth' : 'instant', block: 'start' });
     rule.el.classList.remove('rw-flash'); void rule.el.offsetWidth; rule.el.classList.add('rw-flash');
     if (updateHash && !editMode) history.replaceState(null, '', `#${rule.id}`);
   }
@@ -1021,6 +1058,7 @@
   }
 
   /* ---------- Lesehilfen ---------- */
+  $('.breadcrumb')?.insertAdjacentHTML('beforeend', '<span class="crumb-slash crumb-chapter-sep">/</span><span id="rwCrumbChapter" class="crumb-chapter"></span>');
   const progress = document.createElement('div'); progress.className = 'rw-progress'; progress.setAttribute('aria-hidden', 'true'); document.body.append(progress);
   const toTop = document.createElement('button'); toTop.type = 'button'; toTop.className = 'rw-top'; toTop.setAttribute('aria-label', 'Nach oben'); toTop.title = 'Nach oben'; toTop.textContent = '↑'; document.body.append(toTop);
   toTop.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
@@ -1042,7 +1080,14 @@
     return i;
   }
   let readSize = applyReadSize(Number(localStorage.getItem(READ_SIZE_KEY) ?? 2));
-  $('.top-actions')?.insertAdjacentHTML('afterbegin', `<div class="rw-size" role="group" aria-label="Lesegröße"><button type="button" data-rw="size-down" aria-label="Schrift kleiner" title="Schrift kleiner">A−</button><button type="button" data-rw="size-up" aria-label="Schrift größer" title="Schrift größer">A+</button><button type="button" data-rw="keys" aria-label="Tastenkürzel anzeigen" title="Tastenkürzel (?)">?</button></div>`);
+  const THEME_KEY = 'regelwerk-theme-v1';
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme === 'color' ? 'color' : 'mono';
+    const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = theme === 'mono' ? '#1e1e1e' : '#1a1a1a';
+    try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
+  }
+  try { applyTheme(localStorage.getItem(THEME_KEY) || 'mono'); } catch (_) { applyTheme('mono'); }
+  $('.top-actions')?.insertAdjacentHTML('afterbegin', `<div class="rw-size" role="group" aria-label="Lesegröße"><button type="button" data-rw="size-down" aria-label="Schrift kleiner" title="Schrift kleiner">A−</button><button type="button" data-rw="size-up" aria-label="Schrift größer" title="Schrift größer">A+</button><button type="button" data-rw="theme" aria-label="Zwischen Farbe und Schwarz-Weiß wechseln" title="Schwarz-Weiß / Farbe">◐</button><button type="button" data-rw="keys" aria-label="Tastenkürzel anzeigen" title="Tastenkürzel (?)">?</button></div>`);
 
   /* ---------- Eigene Dialoge ---------- */
   function makeModal(id, inner, wide = false) {
@@ -1348,7 +1393,7 @@
   /* ---------- Klicks ---------- */
   document.addEventListener('click', event => {
     const tile = event.target.closest('[data-rule-index]');
-    if (tile) { event.preventDefault(); jumpToRule(RW.rules[Number(tile.dataset.ruleIndex)]); return; }
+    if (tile) { event.preventDefault(); document.body.classList.remove('rw-outline-open'); jumpToRule(RW.rules[Number(tile.dataset.ruleIndex)]); return; }
     const link = event.target.closest('[data-rule-link]');
     if (link) {
       const url = `${location.href.split('#')[0]}#${link.dataset.ruleLink}`;
@@ -1373,6 +1418,9 @@
     if (download) { const entry = readHistory()[Number(download.dataset.rwDownload)]; if (entry) exportFile(`Regelwerk_Version_${new Date(entry.t).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.json`, JSON.stringify(JSON.parse(entry.json), null, 2), 'application/json;charset=utf-8'); return; }
     const action = event.target.closest('[data-rw]')?.dataset.rw; if (!action) return;
     const index = data.pages.findIndex(p => p.id === data.currentPage);
+    if (action === 'outline-open') document.body.classList.add('rw-outline-open');
+    if (action === 'outline-close') document.body.classList.remove('rw-outline-open');
+    if (action === 'theme') { const next = document.documentElement.dataset.theme === 'color' ? 'mono' : 'color'; applyTheme(next); showNotice(next === 'mono' ? 'Schwarz-Weiß ist an.' : 'Farbversion ist an.', 'info'); }
     if (action === 'size-down') readSize = applyReadSize(readSize - 1);
     if (action === 'size-up') readSize = applyReadSize(readSize + 1);
     if (action === 'keys') openRwModal($('#rwKeysModal'));
@@ -1406,6 +1454,7 @@
     if (event.key === 'Escape') {
       for (const id of ['rwKeysModal', 'rwHistoryModal']) if (!$('#' + id).hidden) { $('#' + id).hidden = true; return; }
       if (!findPanel.hidden) { closeFind(); return; }
+      if (document.body.classList.contains('rw-outline-open')) { document.body.classList.remove('rw-outline-open'); return; }
       if (document.body.classList.contains('rw-focus')) { document.body.classList.remove('rw-focus'); return; }
       hideBubble();
     }
