@@ -35,6 +35,7 @@
   --rail:300px;
   --top:64px;
   --doc-size:17px;
+  --z:1; /* layout scale on large screens; text stays zoomable via A−/A+ and browser zoom */
   --font:"Barlow","Segoe UI",system-ui,-apple-system,sans-serif;
   --font-cond:"Barlow Condensed","Bahnschrift","Arial Narrow","Segoe UI",sans-serif;
   --mono:"Cascadia Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
@@ -56,7 +57,9 @@ button{cursor:pointer}
 kbd{display:inline-block;min-width:22px;padding:1px 6px;border:1px solid currentColor;border-bottom-width:2px;font:500 12px/18px var(--mono);text-align:center;vertical-align:1px}
 
 /* ---------- Shell: tile rail on the right ---------- */
-.app-shell{display:block;min-height:100vh}
+.app-shell{display:block;min-height:100vh;zoom:var(--z)}
+@media(min-width:1100px){:root{--z:.88}}
+@media(min-width:1440px){:root{--z:.8}}
 .sidebar{position:fixed;top:0;right:0;bottom:0;width:var(--rail);z-index:6;display:flex;flex-direction:column;background:var(--black);counter-reset:nav}
 .brand{flex:0 0 auto;display:flex;align-items:center;gap:12px;height:var(--top);padding:0 24px;margin:0;color:var(--on-dark);text-decoration:none;font:800 24px/1 var(--font-cond);letter-spacing:.01em;text-transform:uppercase;border-bottom:1px solid var(--line-d)}
 .brand-mark{display:grid;place-items:center;width:30px;height:30px;background:var(--lime);color:var(--black);font:800 18px/1 var(--font-cond)}
@@ -110,7 +113,7 @@ kbd{display:inline-block;min-width:22px;padding:1px 6px;border:1px solid current
 .arrow-link:hover{text-decoration:underline}
 
 /* ---------- Content ---------- */
-.content-wrap{max-width:1280px;margin:0 auto;padding:0 40px 32px;min-height:calc(100vh - var(--top));display:flex;flex-direction:column}
+.content-wrap{max-width:1280px;margin:0 auto;padding:0 40px 32px;min-height:calc(100vh / var(--z) - var(--top));display:flex;flex-direction:column}
 #pageCanvas{min-width:0}
 
 /* ---------- Poster hero ---------- */
@@ -229,15 +232,15 @@ kbd{display:inline-block;min-width:22px;padding:1px 6px;border:1px solid current
 .rw-admin .admin-link{opacity:1;color:var(--lime)}
 
 /* ---------- Notices as toasts ---------- */
-.notice{position:fixed;z-index:60;left:calc((100vw - var(--rail)) / 2);bottom:24px;transform:translateX(-50%);width:max-content;max-width:min(560px,calc(100vw - var(--rail) - 48px));margin:0;padding:14px 20px;border:0;border-left:6px solid var(--lime);border-radius:0;background:var(--black);color:var(--on-dark);font:500 15px/1.4 var(--font);box-shadow:0 12px 40px rgba(0,0,0,.45);animation:rw-toast .25s var(--ease)}
+.notice{position:fixed;z-index:60;left:calc((100vw - var(--rail) * var(--z)) / 2);bottom:24px;transform:translateX(-50%);width:max-content;max-width:min(560px,calc(100vw - var(--rail) * var(--z) - 48px));margin:0;padding:14px 20px;border:0;border-left:6px solid var(--lime);border-radius:0;background:var(--black);color:var(--on-dark);font:500 15px/1.4 var(--font);box-shadow:0 12px 40px rgba(0,0,0,.45);animation:rw-toast .25s var(--ease)}
 .notice-success{border-left-color:var(--lime)}
 .notice-error{border-left-color:var(--danger)}
 .notice-info{border-left-color:var(--grey)}
 @keyframes rw-toast{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
 
 /* ---------- Reading progress and back to top ---------- */
-.rw-progress{position:fixed;z-index:20;top:0;left:0;right:var(--rail);height:4px;background:var(--lime);transform:scaleX(0);transform-origin:left;pointer-events:none}
-.rw-top{position:fixed;z-index:19;right:calc(var(--rail) + 24px);bottom:24px;width:56px;height:56px;border:0;background:var(--lime);color:var(--black);font:800 28px/1 var(--font-cond);opacity:0;transform:translateY(12px);pointer-events:none;transition:opacity .2s var(--ease),transform .2s var(--ease),background-color .15s}
+.rw-progress{position:fixed;z-index:20;top:0;left:0;right:calc(var(--rail) * var(--z));height:4px;background:var(--lime);transform:scaleX(0);transform-origin:left;pointer-events:none}
+.rw-top{position:fixed;z-index:19;right:calc(var(--rail) * var(--z) + 24px);bottom:24px;width:56px;height:56px;border:0;background:var(--lime);color:var(--black);font:800 28px/1 var(--font-cond);opacity:0;transform:translateY(12px);pointer-events:none;transition:opacity .2s var(--ease),transform .2s var(--ease),background-color .15s}
 .rw-top.is-visible{opacity:1;transform:none;pointer-events:auto}
 .rw-top:hover{background:var(--white)}
 
@@ -301,7 +304,7 @@ kbd{display:inline-block;min-width:22px;padding:1px 6px;border:1px solid current
 .rw-bubble button:hover{background:var(--lime);color:var(--black)}
 .rw-bubble-sep{width:1px;height:20px;margin:0 2px;background:var(--ink-4)}
 .rw-mark-swatch{display:inline-block;width:16px;height:16px;background:var(--lime)}
-.rw-find{position:fixed;z-index:65;top:calc(var(--top) + 16px);right:calc(var(--rail) + 24px);width:360px;display:grid;gap:10px;padding:16px;background:var(--white);color:var(--on-light);border:2px solid var(--black);box-shadow:8px 8px 0 var(--black)}
+.rw-find{position:fixed;z-index:65;top:calc(var(--top) * var(--z) + 16px);right:calc(var(--rail) * var(--z) + 24px);width:360px;display:grid;gap:10px;padding:16px;background:var(--white);color:var(--on-light);border:2px solid var(--black);box-shadow:8px 8px 0 var(--black)}
 .rw-find-head{display:flex;align-items:center;gap:12px}
 .rw-find-head strong{font:800 22px/1 var(--font-cond);text-transform:uppercase}
 .rw-find-head span{margin-left:auto;color:var(--on-light-3);font-size:13px}
