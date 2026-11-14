@@ -973,7 +973,7 @@
     if (heads.filter(h => h.numbered || h.title).length) facts.push([heads.length, heads.length === 1 ? 'Kapitel' : 'Kapitel']);
     if (words > 40) facts.push([minutes, 'Min. Lesezeit']);
     facts.push(stand ? [stand, 'Stand'] : [data.pages.length, data.pages.length === 1 ? 'Seite' : 'Seiten']);
-    const factsHtml = `<div class="rw-facts" aria-label="Überblick">${facts.slice(0, 4).map(([n, l], i) => `<div class="rw-fact ${i === 0 ? 'rw-fact-lead' : ''} ${typeof n === 'string' ? 'rw-fact-text' : ''}"><strong>${escapeHtml(n)}</strong><span>${escapeHtml(l)}</span></div>`).join('')}</div>`;
+    const factsHtml = facts.length < 2 ? '' : `<div class="rw-facts" aria-label="Überblick">${facts.slice(0, 4).map(([n, l], i) => `<div class="rw-fact ${i === 0 ? 'rw-fact-lead' : ''} ${typeof n === 'string' ? 'rw-fact-text' : ''}"><strong>${escapeHtml(n)}</strong><span>${escapeHtml(l)}</span></div>`).join('')}</div>`;
     let tocHtml = '';
     if (heads.length >= 2) {
       tocHtml = `<nav class="rw-toc" aria-label="Inhalt dieser Seite"><div class="rw-toc-head"><h2>Inhalt</h2><span>${heads.length} Kapitel${items.length ? ` · ${items.length} Regeln` : ''}</span></div><div class="rw-toc-grid">${heads.map(h => {

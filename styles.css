@@ -58,8 +58,6 @@ kbd{display:inline-block;min-width:22px;padding:1px 6px;border:1px solid current
 
 /* ---------- Shell: tile rail on the right ---------- */
 .app-shell{display:block;min-height:100vh;zoom:var(--z)}
-@media(min-width:1100px){:root{--z:.88}}
-@media(min-width:1440px){:root{--z:.8}}
 .sidebar{position:fixed;top:0;right:0;bottom:0;width:var(--rail);z-index:6;display:flex;flex-direction:column;background:var(--black);counter-reset:nav}
 .brand{flex:0 0 auto;display:flex;align-items:center;gap:12px;height:var(--top);padding:0 24px;margin:0;color:var(--on-dark);text-decoration:none;font:800 24px/1 var(--font-cond);letter-spacing:.01em;text-transform:uppercase;border-bottom:1px solid var(--line-d)}
 .brand-mark{display:grid;place-items:center;width:30px;height:30px;background:var(--lime);color:var(--black);font:800 18px/1 var(--font-cond)}
